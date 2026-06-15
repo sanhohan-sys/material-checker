@@ -1,279 +1,406 @@
-import streamlit as st
-import pandas as pd
+import os
+import json
 import math
-import io
+import tkinter as tk
+from tkinter import messagebox, ttk
 
-# 1. 웹페이지 설정
-st.set_page_config(
-    page_title="자재 청구 리스트 자동 점검 시스템",
-    page_icon="📋",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# 설정 및 데이터 저장 파일 경로 (로컬 PC 저장)
+DB_FILE = "admin_db.json"
 
-# 2. 세션 상태(Session State) 초기화
-# 관리자 모드용 자재별 포장사양 데이터베이스 예시 데이터 구축
-if "admin_db" not in st.session_state:
-    st.session_state.admin_db = pd.DataFrame([
-        {"자재코드": "MTRL-001", "포장사양": "P0804"},
-        {"자재코드": "MTRL-002", "포장사양": "P1201"},
-        {"자재코드": "MTRL-003", "포장사양": "P0802"},
-        {"자재코드": "MTRL-004", "포장사양": "P1205"}
-    ])
-
-# 3. 스타일 및 타이틀
-st.title("📋 자재 청구 리스트 자동 점검 시스템")
-st.markdown("자재 청구 엑셀 파일을 업로드하고 **[점검 시작]** 버튼을 누르면 점검 규칙에 맞춰 데이터를 분석합니다.")
-st.markdown("---")
-
-# 4. 탭 구성 (점검 화면과 관리자 모드를 분리)
-tab_check, tab_admin = st.tabs(["📊 자재 청구 점검", "⚙️ 관리자 모드 (포장사양 관리)"])
-
-# =========================================================================
-# TAB 1: 자재 청구 점검 화면
-# =========================================================================
-with tab_check:
-    st.subheader("📁 점검용 엑셀 파일 업로드")
-    uploaded_file = st.file_uploader("자재 청구 엑셀 파일(.xlsx, .xls)을 선택하세요.", type=["xlsx", "xls"], key="checker_upload")
-
-    if uploaded_file is not None:
+# 1. 관리자 데이터베이스 로드/저장 함수
+def load_admin_db():
+    if os.path.exists(DB_FILE):
         try:
-            # 엑셀 파일 읽기 (헤더가 있는 1번째 행 기준)
-            df = pd.read_excel(uploaded_file, header=0)
-            total_rows = len(df)
-            st.info(f"📂 파일명: **{uploaded_file.name}** | 총 **{total_rows}**개의 행이 감지되었습니다.")
+            with open(DB_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    # 기본 예시 데이터
+    return {
+        "MTRL-001": "P0804",
+        "MTRL-002": "P1201",
+        "MTRL-003": "P0802"
+    }
+
+def save_admin_db(data):
+    try:
+        with open(DB_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        messagebox.showerror("에러", f"관리자 DB 저장 중 오류가 발생했습니다: {e}")
+
+class MaterialCheckerApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("📋 사내 보안 우회용 자재 청구 자동 점검 시스템 (Copy & Paste)")
+        self.root.geometry("950x750")
+        self.root.minsize(900, 650)
+
+        self.admin_db = load_admin_db()
+
+        # UI 스타일 설정
+        self.style = ttk.Style()
+        self.style.theme_use("clam")
+
+        # 메인 탭 구성
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
+
+        self.tab_check = ttk.Frame(self.notebook)
+        self.tab_admin = ttk.Frame(self.notebook)
+
+        self.notebook.add(self.tab_check, text=" 📊 자재 청구 복사 점검 ")
+        self.notebook.add(self.tab_admin, text=" ⚙️ 관리자 모드 (포장사양 대량 관리) ")
+
+        self.create_check_tab()
+        self.create_admin_tab()
+
+    # -------------------------------------------------------------------------
+    # TAB 1: 자재 청구 점검 화면 구성 (Ctrl+V 복사 점검)
+    # -------------------------------------------------------------------------
+    def create_check_tab(self):
+        # 상단 안내 영역
+        info_frame = ttk.Frame(self.tab_check)
+        info_frame.pack(fill="x", padx=15, pady=10)
+        
+        info_lbl = ttk.Label(
+            info_frame, 
+            text="💡 [사용방법]\n1. 엑셀 시트에서 A열부터 R열까지 드래그(최대 1,000개 행)하여 복사(Ctrl+C)합니다.\n2. 아래 입력창에 클릭 후 붙여넣기(Ctrl+V)하고 아래 [▶️ 점검 시작] 버튼을 클릭하세요.",
+            font=("Arial", 10, "bold"),
+            foreground="#005A9E"
+        )
+        info_lbl.pack(anchor="w")
+
+        # 붙여넣기 입력창 영역 (A열부터 R열용)
+        paste_frame = ttk.LabelFrame(self.tab_check, text="엑셀 데이터 붙여넣기 칸 (A열 ~ R열 데이터, 최대 1000행)")
+        paste_frame.pack(fill="x", padx=15, pady=5)
+
+        # 가로/세로 스크롤바가 장착된 텍스트박스
+        x_scroll = ttk.Scrollbar(paste_frame, orient="horizontal")
+        y_scroll = ttk.Scrollbar(paste_frame, orient="vertical")
+        
+        self.txt_paste = tk.Text(
+            paste_frame, 
+            height=8, 
+            wrap="none", 
+            xscrollcommand=x_scroll.set, 
+            yscrollcommand=y_scroll.set,
+            font=("Courier New", 9)
+        )
+        self.txt_paste.pack(side="left", fill="both", expand=True, padx=(5, 0), pady=5)
+        
+        y_scroll.config(command=self.txt_paste.yview)
+        y_scroll.pack(side="right", fill="y", pady=5)
+        x_scroll.config(command=self.txt_paste.xview)
+        x_scroll.pack(side="bottom", fill="x")
+
+        # 🚨 [점검 시작] 버튼 영역 (직관적이고 확실한 크기로 배치)
+        btn_frame = ttk.Frame(self.tab_check)
+        btn_frame.pack(fill="x", padx=15, pady=10)
+
+        self.btn_start = tk.Button(
+            btn_frame, 
+            text="▶️ 점검 시작 (Start Verification)", 
+            font=("Arial", 13, "bold"),
+            bg="#0078D7", 
+            fg="white", 
+            activebackground="#005A9E",
+            activeforeground="white",
+            relief="raised",
+            bd=3,
+            command=self.run_verification
+        )
+        self.btn_start.pack(fill="x", ipady=10)
+
+        # 점검 결과 통계 영역
+        stats_frame = ttk.LabelFrame(self.tab_check, text="점검 결과 요약")
+        stats_frame.pack(fill="x", padx=15, pady=5)
+
+        self.lbl_stat_total = ttk.Label(stats_frame, text="총 점검 수: - 건", font=("Arial", 10, "bold"))
+        self.lbl_stat_total.pack(side="left", padx=30, pady=8)
+
+        self.lbl_stat_success = ttk.Label(stats_frame, text="정상 수량: - 건", foreground="green", font=("Arial", 10, "bold"))
+        self.lbl_stat_success.pack(side="left", padx=30, pady=8)
+
+        self.lbl_stat_error = ttk.Label(stats_frame, text="오류/불일치: - 건", foreground="red", font=("Arial", 10, "bold"))
+        self.lbl_stat_error.pack(side="left", padx=30, pady=8)
+
+        # 결과 테이블 목록 영역
+        list_frame = ttk.LabelFrame(self.tab_check, text="상세 분석 리스트")
+        list_frame.pack(fill="both", expand=True, padx=15, pady=10)
+
+        # 결과 테이블 트리뷰
+        columns = ("row_num", "material_code", "pack_spec", "qty_mass", "qty_common", "qty_req", "result", "desc")
+        self.tree = ttk.Treeview(list_frame, columns=columns, show="headings")
+
+        self.tree.heading("row_num", text="행")
+        self.tree.heading("material_code", text="자재코드(A)")
+        self.tree.heading("pack_spec", text="포장사양(H)")
+        self.tree.heading("qty_mass", text="양산청구수량(J)")
+        self.tree.heading("qty_common", text="공용청구수량(L)")
+        self.tree.heading("qty_req", text="필요수량(O)")
+        self.tree.heading("result", text="판정 결과")
+        self.tree.heading("desc", text="상세오류 정보")
+
+        self.tree.column("row_num", width=40, anchor="center")
+        self.tree.column("material_code", width=110, anchor="center")
+        self.tree.column("pack_spec", width=90, anchor="center")
+        self.tree.column("qty_mass", width=110, anchor="e")
+        self.tree.column("qty_common", width=110, anchor="e")
+        self.tree.column("qty_req", width=90, anchor="e")
+        self.tree.column("result", width=90, anchor="center")
+        self.tree.column("desc", width=250, anchor="w")
+
+        # 스크롤바 연결
+        scrollbar_y = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar_y.set)
+
+        self.tree.pack(side="left", fill="both", expand=True)
+        scrollbar_y.pack(side="right", fill="y")
+
+    def run_verification(self):
+        raw_text = self.txt_paste.get("1.0", "end-1c").strip()
+        if not raw_text:
+            messagebox.showwarning("경고", "붙여넣기 칸에 엑셀 데이터를 먼저 입력(Ctrl+V)해 주세요!")
+            return
+
+        # 테이블 초기화
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        lines = raw_text.split('\n')
+        # 빈 줄 제외 및 최대 1000개 행 제한
+        valid_lines = [line for line in lines if line.strip()]
+        valid_lines = valid_lines[:1000]
+
+        total_count = 0
+        success_count = 0
+        error_count = 0
+        error_rows_info = []
+
+        for idx, line in enumerate(valid_lines):
+            excel_row_num = idx + 1  # 상대 행 번호 기록
+            total_count += 1
+
+            # 탭 문자 분해
+            cols = line.split('\t')
             
-            # 🚨 시작 버튼 추가
-            start_btn = st.button("▶️ 점검 시작 (Start)", type="primary", use_container_width=True)
+            # Index Error를 막기 위해 최대 R열(18개 열) 크기로 강제 패딩 처리
+            while len(cols) < 18:
+                cols.append("")
+
+            # 엑셀 열 매핑 매뉴얼 정보 바탕 추출
+            # A열(Index 0): 자재코드, H열(Index 7): 포장사양, J열(Index 9): 양산청구수량, L열(Index 11): 공용청구수량, O열(Index 14): 필요수량
+            material_code = cols[0].strip() if cols[0] else "N/A"
+            packing_spec = cols[7].strip() if cols[7] else ""
+            qty_mass_raw = cols[9].strip() if cols[9] else "0"
+            qty_common_raw = cols[11].strip() if cols[11] else "0"
+            qty_required_raw = cols[14].strip() if cols[14] else "0"
+
+            is_db_mapped = False
+            row_status = "정상"
+            reasons = []
+
+            # 💡 [보완기능] H열 포장사양이 비어있거나 누락되었을 경우 -> 관리자 DB 자동 매핑
+            if packing_spec == "" or packing_spec.lower() in ["nan", "none"]:
+                if material_code in self.admin_db:
+                    packing_spec = self.admin_db[material_code]
+                    is_db_mapped = True
+                else:
+                    row_status = "에러"
+                    reasons.append("H열 포장사양 누락 및 관리자 DB 매핑 정보 없음")
+
+            # 수량 데이터 정수 및 실수 형변환
+            try:
+                qty_required = float(qty_required_raw.replace(",", ""))
+                qty_mass = float(qty_mass_raw.replace(",", ""))
+                qty_common = float(qty_common_raw.replace(",", ""))
+            except ValueError:
+                row_status = "에러"
+                reasons.append("수량 데이터가 올바른 숫자가 아닙니다")
+                qty_required, qty_mass, qty_common = 0, 0, 0
+
+            if row_status != "에러":
+                # [규칙 1] 포장사양 코드 슬라이싱 (P0804 -> '08', P1201 -> '12')
+                parsed_spec = ""
+                if len(packing_spec) >= 3:
+                    parsed_spec = packing_spec[1:3]
+                else:
+                    row_status = "에러"
+                    reasons.append(f"포장사양 자릿수 부족(형식오류: '{packing_spec}')")
+
+                # [규칙 2] 양산청구수량(J) == 필요수량(O) 검증
+                if qty_mass != qty_required:
+                    row_status = "에러"
+                    reasons.append(f"양산수량 불일치(필요:{int(qty_required)} / 청구:{int(qty_mass)})")
+
+                # [규칙 3] 공용청구수량(L) 조건 분기 적용
+                if parsed_spec == "08":
+                    expected_common = 30 if qty_required <= 500 else math.ceil(qty_required * 0.05)
+                    if qty_common != expected_common:
+                        row_status = "에러"
+                        reasons.append(f"공용수량 오류(기준 {expected_common} / 청구 {int(qty_common)})")
+                elif parsed_spec == "12":
+                    expected_common = 3 # 12사양은 3개 고정 추가
+                    if qty_common != expected_common:
+                        row_status = "에러"
+                        reasons.append(f"공용수량 오류('12'사양은 3개 고정 / 청구 {int(qty_common)})")
+
+            # 판정 저장 및 UI 트리뷰 출력
+            if row_status == "정상":
+                success_count += 1
+                status_text = "정상"
+                desc_text = "검증 통과"
+                if is_db_mapped:
+                    desc_text += " (관리자 DB 자동보완)"
+            else:
+                error_count += 1
+                status_text = "❌ 오류"
+                desc_text = ", ".join(reasons)
+                error_rows_info.append(f"• 붙여넣기 {excel_row_num}번째 행 ({material_code}): {desc_text}")
+
+            self.tree.insert("", "end", values=(
+                excel_row_num, material_code, packing_spec, 
+                int(qty_mass) if qty_mass.is_integer() else qty_mass, 
+                int(qty_common) if qty_common.is_integer() else qty_common, 
+                int(qty_required) if qty_required.is_integer() else qty_required, 
+                status_text, desc_text
+            ))
+
+        # 통계판 업데이트
+        self.lbl_stat_total.config(text=f"총 점검 수: {total_count} 건")
+        self.lbl_stat_success.config(text=f"정상 수량: {success_count} 건")
+        self.lbl_stat_error.config(text=f"오류/불일치: {error_count} 건")
+
+        # 결과 알림창 트리거
+        if error_count == 0:
+            messagebox.showinfo("🎉 검증 완료", f"축하합니다! 붙여넣은 {total_count}건의 데이터에 오류가 전혀 발견되지 않았습니다.")
+        else:
+            summary_msg = f"🚨 총 {error_count}개의 항목에서 수량 불일치 또는 사양 오류가 감지되었습니다.\n\n"
+            summary_msg += "\n".join(error_rows_info[:10])  # 최대 10행 요약 출력
+            if len(error_rows_info) > 10:
+                summary_msg += f"\n\n외 {len(error_rows_info)-10}건의 불일치 오류가 추가 감지되었습니다."
+            messagebox.showerror("🚨 수량 불일치 감지", summary_msg)
+
+
+    # -------------------------------------------------------------------------
+    # TAB 2: 관리자 모드 (자재 포장사양 대량 복사 등록 관리)
+    # -------------------------------------------------------------------------
+    def create_admin_tab(self):
+        # 상단 설명 영역
+        desc_lbl = ttk.Label(
+            self.tab_admin, 
+            text="⚙️ 관리자용 포장사양 일괄 데이터베이스 등록창\n\n여기에 자재별 포장사양 기준을 대량으로 복사해서 붙여넣고 아래 버튼을 누르면\n사양 정보가 없는 자재를 분석할 때 로컬 DB에서 대조하여 자동으로 분석해줍니다. (최대 20,000행 지원)",
+            font=("Arial", 10)
+        )
+        desc_lbl.pack(fill="x", padx=15, pady=10)
+
+        # 대량 일괄 붙여넣기 폼 영역
+        bulk_frame = ttk.LabelFrame(self.tab_admin, text="포장사양 대량 붙여넣기 영역 (형식: 자재코드  포장사양)")
+        bulk_frame.pack(fill="both", expand=True, padx=15, pady=5)
+
+        x_scroll_admin = ttk.Scrollbar(bulk_frame, orient="horizontal")
+        y_scroll_admin = ttk.Scrollbar(bulk_frame, orient="vertical")
+        
+        self.txt_admin_paste = tk.Text(
+            bulk_frame, 
+            height=12, 
+            wrap="none", 
+            xscrollcommand=x_scroll_admin.set, 
+            yscrollcommand=y_scroll_admin.set,
+            font=("Courier New", 9)
+        )
+        self.txt_admin_paste.pack(side="left", fill="both", expand=True, padx=(5, 0), pady=5)
+        
+        y_scroll_admin.config(command=self.txt_admin_paste.yview)
+        y_scroll_admin.pack(side="right", fill="y", pady=5)
+        x_scroll_admin.config(command=self.txt_admin_paste.xview)
+        x_scroll_admin.pack(side="bottom", fill="x")
+
+        # 대량 업데이트용 실행 버튼
+        btn_db_update = tk.Button(
+            self.tab_admin,
+            text="💾 관리자 DB 일괄 업데이트 및 저장",
+            font=("Arial", 11, "bold"),
+            bg="#28A745",
+            fg="white",
+            activebackground="#218838",
+            activeforeground="white",
+            relief="raised",
+            bd=3,
+            command=self.run_admin_db_bulk_update
+        )
+        btn_db_update.pack(fill="x", padx=15, pady=10, ipady=6)
+
+        # 목록 조회 및 삭제 프레임
+        list_frame = ttk.LabelFrame(self.tab_admin, text="현재 로컬 DB에 등록 및 등록 예정인 자재 코드 수량 현황")
+        list_frame.pack(fill="x", padx=15, pady=5)
+
+        self.lbl_db_count = ttk.Label(list_frame, text="현재 등록된 포장사양 개수: 0 개", font=("Arial", 10, "bold"))
+        self.lbl_db_count.pack(padx=20, pady=10, side="left")
+
+        btn_clear_db = ttk.Button(list_frame, text="🗑️ 전체 DB 초기화", command=self.clear_admin_db)
+        btn_clear_db.pack(padx=20, pady=10, side="right")
+
+        self.update_db_count_label()
+
+    def update_db_count_label(self):
+        self.lbl_db_count.config(text=f"현재 로컬 DB에 등록된 자재 개수: {len(self.admin_db)} 개")
+
+    def run_admin_db_bulk_update(self):
+        raw_text = self.txt_admin_paste.get("1.0", "end-1c").strip()
+        if not raw_text:
+            messagebox.showwarning("경고", "붙여넣기 창에 등록할 대용량 데이터를 입력해 주세요.")
+            return
+
+        lines = raw_text.split('\n')
+        valid_lines = [line for line in lines if line.strip()]
+        valid_lines = valid_lines[:20000] # 최대 20,000행 제한
+
+        new_entries_count = 0
+        updated_entries_count = 0
+
+        for line in valid_lines:
+            # 탭 혹은 공백 문자로 스플릿 처리
+            cols = line.split('\t')
+            if len(cols) < 2:
+                cols = line.split() # 탭이 없으면 공백 기준으로 스플릿 시도
             
-            if start_btn:
-                # 검증 결과 및 오류 내역 리스트 초기화
-                error_list = []
-                verified_data = []
+            if len(cols) >= 2:
+                mtrl_code = cols[0].strip()
+                pack_spec = cols[1].strip()
 
-                # 행별 검증 시작
-                for idx, row in df.iterrows():
-                    excel_row_num = idx + 2  # 엑셀 기준 실제 행 번호 (헤더가 1행이므로 +2)
-                    row_status = "정상"
-                    error_reason = []
-                    is_mapped_from_admin = False
-
-                    # 최소 15개 열(O열)이 존재하는지 확인
-                    if len(row) < 15:
-                        error_list.append({
-                            "행 번호": excel_row_num,
-                            "자재코드": "N/A",
-                            "오류 유형": "형식 오류",
-                            "상세 내용": "엑셀 열 개수가 부족합니다. A열부터 O열까지 올바르게 채워져 있는지 확인해 주세요."
-                        })
-                        continue
-
-                    # 데이터 안전하게 추출
-                    material_code = str(row.iloc[0]).strip() if not pd.isna(row.iloc[0]) else "N/A"
-                    packing_spec = str(row.iloc[7]).strip() if not pd.isna(row.iloc[7]) else ""
-                    qty_mass = row.iloc[9]
-                    qty_common = row.iloc[11]
-                    qty_required = row.iloc[14]
-
-                    # 💡 관리자 모드 연동: 파일에 포장사양이 비어있는 경우 관리자 DB에서 자동 매핑
-                    if packing_spec == "" or packing_spec.lower() == "nan":
-                        # 관리자 DB에서 자재코드 일치하는 항목 조회
-                        match_row = st.session_state.admin_db[st.session_state.admin_db["자재코드"] == material_code]
-                        if not match_row.empty:
-                            packing_spec = str(match_row.iloc[0]["포장사양"]).strip()
-                            is_mapped_from_admin = True
-                        else:
-                            row_status = "오류"
-                            error_reason.append("엑셀 내 포장사양이 누락되었으며, 관리자 모드 DB에도 등록되어 있지 않습니다.")
-
-                    # 빈 값(NaN) 처리 및 숫자 형식 검증
-                    if pd.isna(qty_required) or pd.isna(qty_mass) or pd.isna(qty_common):
-                        row_status = "오류"
-                        error_reason.append("필수 입력 수량 값(양산청구/공용청구/필요수량) 중 일부가 비어 있습니다.")
+                if mtrl_code and pack_spec:
+                    if mtrl_code in self.admin_db:
+                        updated_entries_count += 1
                     else:
-                        try:
-                            qty_required = float(qty_required)
-                            qty_mass = float(qty_mass)
-                            qty_common = float(qty_common)
-                        except ValueError:
-                            row_status = "오류"
-                            error_reason.append("수량 데이터가 올바른 숫자 형식이 아닙니다.")
-                            qty_required, qty_mass, qty_common = 0, 0, 0
+                        new_entries_count += 1
+                    self.admin_db[mtrl_code] = pack_spec
 
-                    # 수량 규칙 검증 진행
-                    if row_status != "오류":
-                        # [규칙 1] 포장사양 파싱 (P0804 -> '08' / P1201 -> '12')
-                        parsed_spec = ""
-                        if len(packing_spec) >= 3:
-                            parsed_spec = packing_spec[1:3]
-                        else:
-                            row_status = "오류"
-                            error_reason.append(f"포장사양 형식('{packing_spec}')이 부적합합니다. (최소 3자리 필요)")
+        # 파일에 영구 보존
+        save_admin_db(self.admin_db)
+        self.update_db_count_label()
+        
+        # 텍스트박스 리셋
+        self.txt_admin_paste.delete("1.0", tk.END)
 
-                        # [규칙 2] 양산청구수량(J열) == 필요수량(O열) 일치 검증
-                        if qty_mass != qty_required:
-                            row_status = "오류"
-                            error_reason.append(f"양산청구수량 불일치 (필요: {int(qty_required)}개 / 청구: {int(qty_mass)}개)")
-
-                        # [규칙 3] 공용청구수량(L열) 조건 검증
-                        # ① 포장사양이 '08'인 경우
-                        if parsed_spec == "08":
-                            expected_common = 30 if qty_required <= 500 else math.ceil(qty_required * 0.05)
-                            if qty_common != expected_common:
-                                row_status = "오류"
-                                error_reason.append(
-                                    f"공용청구수량 불일치 (기준: 필요 {int(qty_required)}개 일 때 {expected_common}개 필요 / 현재 {int(qty_common)}개)"
-                                )
-                        # ② 포장사양이 '12'인 경우 (3개 고정 추가 청구 규칙 적용)
-                        elif parsed_spec == "12":
-                            expected_common = 3
-                            if qty_common != expected_common:
-                                row_status = "오류"
-                                error_reason.append(
-                                    f"공용청구수량 불일치 (포장사양 '12'는 3개 고정 추가 필요하나 현재 {int(qty_common)}개)"
-                                )
-
-                    # 오류 발생 시 오류 리스트에 상세 기록
-                    if row_status == "오류":
-                        for reason in error_reason:
-                            error_list.append({
-                                "행 번호": excel_row_num,
-                                "자재코드": material_code,
-                                "오류 유형": "수량/규칙 불일치" if "불일치" in reason else "데이터 누락/형식",
-                                "상세 내용": reason
-                            })
-
-                    # 테이블 표시용 데이터 저장
-                    note_msg = "정상 검증 완료"
-                    if is_mapped_from_admin:
-                        note_msg += " (관리자 DB에서 포장사양 연동됨)"
-                    if error_reason:
-                        note_msg = ", ".join(error_reason)
-
-                    verified_data.append({
-                        "행 번호": excel_row_num,
-                        "자재코드": material_code,
-                        "포장사양": packing_spec,
-                        "양산청구": qty_mass,
-                        "공용청구": qty_common,
-                        "필요수량": qty_required,
-                        "결과": "정상" if row_status == "정상" else "❌ 불일치/에러",
-                        "비고": note_msg
-                    })
-
-                # 데이터프레임 변환
-                error_df = pd.DataFrame(error_list)
-                verified_df = pd.DataFrame(verified_data)
-
-                # 점검 결과 대시보드 시각화
-                col1, col2, col3 = st.columns(3)
-                total_items = len(verified_df)
-                error_items = len(error_df["행 번호"].unique()) if not error_df.empty else 0
-                success_items = total_items - error_items
-
-                with col1:
-                    st.metric("총 검증 자재 수", f"{total_items} 건")
-                with col2:
-                    st.metric("검증 성공 (정상)", f"{success_items} 건", delta=f"{success_items}정상")
-                with col3:
-                    st.metric("검증 실패 (불일치)", f"{error_items} 건", delta=f"-{error_items}건" if error_items > 0 else "0건", delta_color="inverse")
-
-                # 웹용 팝업(Modal Dialog) 알림 발생
-                @st.dialog("🚨 검증 완료 안내")
-                def show_popup_results(err_count):
-                    if err_count == 0:
-                        st.balloons()
-                        st.success("🎉 모든 자재 청구 항목이 설정된 규칙과 완벽하게 일치합니다!")
-                    else:
-                        st.error(f"⚠️ 총 {err_count}개의 불일치 및 오류 항목이 발견되었습니다.")
-                        st.dataframe(error_df, use_container_width=True)
-                    if st.button("확인"):
-                        st.rerun()
-
-                # 결과 팝업 트리거
-                show_popup_results(len(error_df))
-
-                # 상세 검증 리스트 화면 출력
-                st.subheader("🔍 점검 상세 리스트")
-                def highlight_errors(row):
-                    return ['background-color: #ffcccc' if row['결과'] == "❌ 불일치/에러" else 'background-color: #e6f4ea' for _ in row]
-
-                st.dataframe(
-                    verified_df.style.apply(highlight_errors, axis=1),
-                    use_container_width=True,
-                    height=450
-                )
-
-                # 점검 리포트 엑셀 다운로드 생성
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    verified_df.to_excel(writer, index=False, sheet_name="검증결과_리포트")
-                processed_data = output.getvalue()
-
-                st.download_button(
-                    label="📥 점검 결과 리포트 다운로드 (Excel)",
-                    data=processed_data,
-                    file_name="자재청구_점검결과.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-
-        except Exception as e:
-            st.error(f"엑셀 파일을 점검하는 중 에러가 발생했습니다: {e}")
-
-# =========================================================================
-# TAB 2: 관리자 모드 (자재별 포장사양 데이터베이스 관리)
-# =========================================================================
-with tab_admin:
-    st.subheader("⚙️ 자재별 포장사양 등록 및 수정 (데이터베이스)")
-    st.markdown("""
-    여기서 등록하고 편집한 데이터는 업로드된 자재 청구 리스트에 포장사양($H$열)이 공백이거나 누락되었을 때, 
-    **자재코드**를 바탕으로 매핑하여 분석하는 데 사용됩니다. 
-    """)
-
-    # Streamlit의 데이터 에디터(Data Editor)를 통해 엑셀처럼 자유로운 수정 지원
-    st.info("💡 아래 테이블을 더블클릭하여 자재코드 및 포장사양을 직접 수정하거나 행을 추가/삭제할 수 있습니다.")
-    
-    # 세션 상태 데이터프레임을 직접 편집하도록 설정
-    edited_df = st.data_editor(
-        st.session_state.admin_db, 
-        num_rows="dynamic",  # 사용자가 직접 행 추가/삭제 가능하도록 지원
-        use_container_width=True,
-        key="admin_editor"
-    )
-
-    # 저장 버튼 제공
-    if st.button("💾 데이터베이스 변경 내용 저장", type="primary"):
-        st.session_state.admin_db = edited_df
-        st.success("🎉 관리자용 포장사양 데이터베이스가 성공적으로 업데이트되었습니다!")
-        st.balloons()
-
-    # 데이터 백업용 다운로드/업로드 기능 추가
-    st.write("---")
-    st.markdown("### 📤 관리자 데이터 백업 및 가져오기")
-    col_dl, col_ul = st.columns(2)
-
-    with col_dl:
-        # 현재 테이블을 CSV로 백업 다운로드
-        csv_data = edited_df.to_csv(index=False).encode('utf-8-sig')
-        st.download_button(
-            label="📥 현재 관리자 데이터 백업 받기 (CSV)",
-            data=csv_data,
-            file_name="admin_packing_spec_backup.csv",
-            mime="text/csv",
-            use_container_width=True
+        messagebox.showinfo(
+            "💾 DB 동기화 완료", 
+            f"로컬 포장사양 데이터베이스를 성공적으로 업데이트하였습니다!\n\n"
+            f"• 신규 등록 건수: {new_entries_count}건\n"
+            f"• 기존 덮어쓰기 건수: {updated_entries_count}건\n"
+            f"• 총 DB 누적 수량: {len(self.admin_db)}건"
         )
 
-    with col_ul:
-        # 파일 업로드를 통해 대량 데이터 로드
-        backup_file = st.file_uploader("백업된 CSV 파일을 업로드하여 덮어쓰기 합니다.", type=["csv"], key="backup_upload")
-        if backup_file is not None:
-            try:
-                uploaded_admin = pd.read_csv(backup_file)
-                # 컬럼 유효성 검증
-                if "자재코드" in uploaded_admin.columns and "포장사양" in uploaded_admin.columns:
-                    st.session_state.admin_db = uploaded_admin[["자재코드", "포장사양"]]
-                    st.success("📥 대량 데이터 업로드 완료! 변경 내용을 확인하고 위 저장 버튼을 눌러주세요.")
-                else:
-                    st.error("파일 형식이 맞지 않습니다. '자재코드'와 '포장사양' 열이 있어야 합니다.")
-            except Exception as e:
-                st.error(f"백업 파일을 불러오는 과정에서 오류가 발생했습니다: {e}")
+    def clear_admin_db(self):
+        confirm = messagebox.askyesno("⚠️ DB 전체 삭제 확인", "정말로 저장되어 있는 모든 자재 포장사양 DB 데이터를 초기화하시겠습니까?")
+        if confirm:
+            self.admin_db = {}
+            save_admin_db(self.admin_db)
+            self.update_db_count_label()
+            messagebox.showinfo("성공", "관리자 DB가 모두 안전하게 비워졌습니다.")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = MaterialCheckerApp(root)
+    root.mainloop()
